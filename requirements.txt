@@ -1,0 +1,8 @@
+ibm-watsonx-ai[foundation_models]
+langchain
+langchain_ibm
+langchain-community
+chromadb
+pypdf
+gradio
+tiktoken
