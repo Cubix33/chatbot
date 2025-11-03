@@ -1,79 +1,86 @@
-from ibm_watsonx_ai.foundation_models import ModelInference
-from ibm_watsonx_ai.metanames import GenTextParamsMetaNames as GenParams
-from ibm_watsonx_ai.metanames import EmbedTextParamsMetaNames
-from ibm_watsonx_ai import Credentials
-from langchain_ibm import WatsonxLLM, WatsonxEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
+from langchain_groq import ChatGroq
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
-from langchain.chains import RetrievalQA
+from langchain_community.vectorstores import Chroma
+from langchain_openai import OpenAIEmbeddings
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 import gradio as gr
+import os
+from dotenv import load_dotenv
 import warnings
 
 warnings.filterwarnings("ignore")
+load_dotenv()
+
 
 def get_llm():
-    model_id = 'mistralai/mixtral-8x7b-instruct-v01'
-    parameters = {
-        GenParams.MAX_NEW_TOKENS: 256,
-        GenParams.TEMPERATURE: 0.5,
-    }
-    project_id = "skills-network"
-    watsonx_llm = WatsonxLLM(
-        model_id=model_id,
-        url="https://us-south.ml.cloud.ibm.com",
-        project_id=project_id,
-        params=parameters,
+    # Use Groq instead of OpenAI/Watsonx
+    return ChatGroq(
+        model="openai/gpt-oss-20b",  # Free model
+        api_key=os.getenv("GROQ_API_KEY"),
+        temperature=0.5
     )
-    return watsonx_llm
+
 
 def document_loader(file_path):
     loader = PyPDFLoader(file_path)
     return loader.load()
 
+
 def text_splitter(data):
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=50)
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=50,
+    )
     return splitter.split_documents(data)
 
-def watsonx_embedding():
-    embed_params = {
-        EmbedTextParamsMetaNames.TRUNCATE_INPUT_TOKENS: 3,
-        EmbedTextParamsMetaNames.RETURN_OPTIONS: {"input_text": True},
-    }
-    return WatsonxEmbeddings(
-        model_id="ibm/slate-125m-english-rtrvr",
-        url="https://us-south.ml.cloud.ibm.com",
-        project_id="skills-network",
-        params=embed_params,
-    )
 
 def vector_database(chunks):
-    embeddings = watsonx_embedding()
+    # Use free embeddings from HuggingFace instead
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    embeddings = HuggingFaceEmbeddings()
     return Chroma.from_documents(chunks, embeddings)
 
-def retriever(file_path):
-    docs = document_loader(file_path)
+
+def retriever(file):
+    docs = document_loader(file.name)
     chunks = text_splitter(docs)
     vectordb = vector_database(chunks)
     return vectordb.as_retriever()
 
+
 def retriever_qa(file, query):
     llm = get_llm()
-    retriever_obj = retriever(file.name)
-    qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever_obj)
-    result = qa.invoke(query)
-    return result['result']
+    retriever_obj = retriever(file)
+    
+    prompt = ChatPromptTemplate.from_template("""Answer the following question based on the provided context:
+Context: {context}
+Question: {question}
+Answer:""")
+    
+    chain = (
+        {"context": retriever_obj, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+    
+    return chain.invoke(query)
+
 
 rag_application = gr.Interface(
     fn=retriever_qa,
     inputs=[
-        gr.File(label="Upload PDF File", file_count="single", file_types=['.pdf'], type="file"),
+        gr.File(label="Upload PDF File", file_count="single", file_types=['.pdf'], type="filepath"),
         gr.Textbox(label="Input Query", lines=2, placeholder="Type your question here...")
     ],
     outputs=gr.Textbox(label="Output"),
     title="RAG Chatbot",
-    description="Upload a PDF and ask questions. Powered by IBM Watsonx and LangChain."
+    description="Upload a PDF and ask questions. Powered by Groq and LangChain."
 )
 
+
 if __name__ == "__main__":
-    rag_application.launch()
+    rag_application.launch(share=True)
